@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#111111">
+<meta charset="UTF-8">
+<title>JDR Maps</title>
+
+<style>
+/* ===== BASE ===== */
+body{
+  margin:0;
+  background:#111;
+  color:#fff;
+  font-family:Arial;
+}
+button,select,input{
+  padding:8px;
+  font-size:14px;
+}
+
+/* ===== CONTROLS ===== */
+#controls{
+  background:#222;
+  padding:10px;
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+
+/* ===== MAP ===== */
+#mapContainer{
+  position:relative;
+  overflow:hidden;
+  background:#000;
+}
+#mapImage{display:block}
+
+/* ===== GRID ===== */
+#grid{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  display:none;
+}
+#grid.active{display:block}
+#grid::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background-image:
+    repeating-linear-gradient(to right,rgba(255,255,255,.15) 0 1px,transparent 1px var(--grid-size)),
+    repeating-linear-gradient(to bottom,rgba(255,255,255,.15) 0 1px,transparent 1px var(--grid-size));
+}
+
+/* ===== TOKENS ===== */
+.token{
+  position:absolute;
+  width:56px;
+  height:56px;
+  border-radius:50%;
+  background:crimson;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  user-select:none;
+  touch-action:none;
+  z-index:10;
+}
+.token.selected{
+  outline:3px solid #00e5ff;
+  outline-offset:2px;
+}
+.token span{
+  position:absolute;
+  bottom:-18px;
+  font-size:12px;
+  white-space:nowrap;
+  left:50%;
+  transform:translateX(-50%);
+}
+.token img{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
+.image-token{
+  background:none;
+  border-radius:0;
+}
+
+/* ===== AURA ===== */
+.token.aura::after{
+  content:"";
+  position:absolute;
+  left:50%;
+  top:50%;
+  width:calc(var(--aura-radius, 80px) * 2);
+  height:calc(var(--aura-radius, 80px) * 2);
+  transform:translate(-50%,-50%);
+  border-radius:50%;
+  pointer-events:none;
+  box-shadow:0 0 12px 4px var(--aura-color, #00e5ff);
+  opacity:.8;
+}
+
+/* ===== TOKEN MENU ===== */
+#tokenMenu{
+  position:fixed;
+  background:#222;
+  border:1px solid #555;
+  padding:12px;
+  display:none;
+  z-index:999;
+  min-width:220px;
+}
+</style>
+</head>
+
+<body>
+
+<div id="controls">
+  <button onclick="addMap()">🗺️ Nouvelle map</button>
+  <select id="mapSelect" onchange="selectMap(this.value)">
+    <option value="">— Choisir une map —</option>
+  </select>
+
+  <button onclick="addToken()">➕ Pion</button>
+  <button onclick="addImageToken()">🖼️ Pion image</button>
+
+  <button onclick="toggleGrid()">🧩 Grille</button>
+  <label>
+    Taille grille
+    <input type="range" min="20" max="200" value="50" oninput="setGridSize(this.value)">
+  </label>
+
+  <select id="diceSelect">
+    <option value="">🎲 Dés</option>
+    <option>1d4</option><option>1d6</option><option>1d8</option>
+    <option>1d10</option><option>1d12</option>
+    <option>1d20</option><option>2d6</option>
+  </select>
+  <button onclick="rollDice()">Lancer</button>
+  <span id="diceResult"></span>
+
+  <button onclick="saveGame()">💾 Sauvegarder</button>
+  <button onclick="loadGame()">♻️ Recharger</button>
+</div>
+
+<div id="mapContainer">
+  <img id="mapImage">
+  <div id="grid"></div>
+</div>
+
+<div id="tokenMenu">
+  <button onclick="renameToken()">✏️ Renommer</button><br><br>
+
+  <label>📏 Taille
+    <input id="sizeSlider" type="range" min="20" max="200">
+  </label><br><br>
+
+  <button onclick="toggleLock()">🔒 / 🔓 Verrou</button><br><br>
+
+  🎨 Couleur aura<br>
+  <input type="color" id="auraColor" value="#00e5ff" onchange="setAuraColor(this.value)"><br><br>
+
+  📡 Rayon aura<br>
+  <input type="range" id="auraRadius" min="20" max="400" value="80"
+         oninput="setAuraRadius(this.value)"><br><br>
+
+  <button onclick="enableAura()">✨ Aura ON</button>
+  <button onclick="disableAura()">🚫 Aura OFF</button><br><br>
+
+  <button onclick="rotateToken(-15)">↺</button>
+  <button onclick="rotateToken(15)">↻</button><br><br>
+
+  <button onclick="flipX()">↔️</button>
+  <button onclick="flipY()">↕️</button><br><br>
+
+  <button onclick="duplicateToken()">📄 Dupliquer</button><br><br>
+  <button onclick="deleteToken()">🗑️ Supprimer</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+const mapContainer = $("mapContainer");
+const mapImage = $("mapImage");
+const grid = $("grid");
+const menu = $("tokenMenu");
+const mapSelect = $("mapSelect");
+const sizeSlider = $("sizeSlider");
+const diceResult = $("diceResult");
+const auraColor = $("auraColor");
+const auraRadius = $("auraRadius");
+
+let maps = [];
+let currentMapIndex = -1;
+let selectedToken = null;
+
+/* ===== GRID ===== */
+function setGridSize(size){
+  grid.style.setProperty("--grid-size", size + "px");
+}
+setGridSize(50);
+function toggleGrid(){ grid.classList.toggle("active"); }
+
+/* ===== TOKEN SELECTION ===== */
+function selectToken(token){
+  document.querySelectorAll(".token.selected").forEach(t=>t.classList.remove("selected"));
+  selectedToken = token;
+  token.classList.add("selected");
+
+  sizeSlider.value = token.offsetWidth;
+  sizeSlider.disabled = token.classList.contains("locked");
+  auraColor.value = token.style.getPropertyValue("--aura-color") || "#00e5ff";
+  auraRadius.value = token.style.getPropertyValue("--aura-radius")?.replace("px","") || 80;
+
+  menu.style.display="block";
+  menu.style.left=(innerWidth-menu.offsetWidth)/2+"px";
+  menu.style.top=(innerHeight-menu.offsetHeight)/2+"px";
+}
+
+/* ===== MAPS ===== */
+function addMap(){
+  const name = prompt("Nom de la map ?");
+  if(!name) return;
+  const input=document.createElement("input");
+  input.type="file"; input.accept="image/*";
+  input.onchange=()=>{
+    const r=new FileReader();
+    r.onload=e=>{
+      const img=new Image();
+      img.onload=()=>{
+        maps.push({name,image:e.target.result,width:img.width,height:img.height,tokens:[]});
+        updateMapSelect();
+        selectMap(maps.length-1);
+      };
+      img.src=e.target.result;
+    };
+    r.readAsDataURL(input.files[0]);
+  };
+  input.click();
+}
+function updateMapSelect(){
+  mapSelect.innerHTML='<option value="">— Choisir une map —</option>';
+  maps.forEach((m,i)=>mapSelect.add(new Option(m.name,i)));
+}
+function selectMap(i){
+  if(i==="") return;
+  if(currentMapIndex!==-1) saveCurrentTokens();
+  currentMapIndex=+i;
+  loadCurrentMap();
+}
+function loadCurrentMap(){
+  const m=maps[currentMapIndex];
+  mapContainer.style.width=m.width+"px";
+  mapContainer.style.height=m.height+"px";
+  mapImage.src=m.image;
+  document.querySelectorAll(".token").forEach(t=>t.remove());
+  m.tokens.forEach(d=>mapContainer.appendChild(recreateToken(d)));
+}
+function saveCurrentTokens(){
+  maps[currentMapIndex].tokens=[...document.querySelectorAll(".token")].map(t=>({
+    x:t.style.left,
+    y:t.style.top,
+    size:t.offsetWidth,
+    name:t.querySelector("span")?.textContent||"",
+    image:t.querySelector("img")?.src||null,
+    angle:t.dataset.angle,
+    flipx:t.dataset.flipx,
+    flipy:t.dataset.flipy,
+    locked:t.classList.contains("locked"),
+    aura:t.classList.contains("aura"),
+    auraColor:t.style.getPropertyValue("--aura-color"),
+    auraRadius:t.style.getPropertyValue("--aura-radius")
+  }));
+}
+
+/* ===== TOKENS ===== */
+function createToken(image=false){
+  const t=document.createElement("div");
+  t.className="token";
+  t.style.left=t.style.top="40px";
+  t.dataset.angle=0;t.dataset.flipx=1;t.dataset.flipy=1;
+  if(image)t.classList.add("image-token");
+  t.appendChild(document.createElement("span"));
+  makeDraggable(t);
+  t.onclick=e=>(e.stopPropagation(),selectToken(t));
+  return t;
+}
+function recreateToken(d){
+  const t=createToken();
+  Object.assign(t.style,{left:d.x,top:d.y,width:d.size+"px",height:d.size+"px"});
+  Object.assign(t.dataset,{angle:d.angle,flipx:d.flipx,flipy:d.flipy});
+  if(d.locked)t.classList.add("locked");
+  if(d.aura)t.classList.add("aura");
+  if(d.auraColor)t.style.setProperty("--aura-color",d.auraColor);
+  if(d.auraRadius)t.style.setProperty("--aura-radius",d.auraRadius);
+  if(d.image){
+    t.classList.add("image-token");
+    const i=document.createElement("img");
+    i.src=d.image;
+    t.appendChild(i);
+  }
+  t.querySelector("span").textContent=d.name;
+  applyTransform(t);
+  return t;
+}
+function addToken(){ mapContainer.appendChild(createToken()); }
+function addImageToken(){
+  const i=document.createElement("input");
+  i.type="file";i.accept="image/*";
+  i.onchange=()=>{
+    const r=new FileReader();
+    r.onload=e=>{
+      const t=createToken(true);
+      const img=document.createElement("img");
+      img.src=e.target.result;
+      t.appendChild(img);
+      mapContainer.appendChild(t);
+    };
+    r.readAsDataURL(i.files[0]);
+  };
+  i.click();
+}
+
+/* ===== TRANSFORMS ===== */
+function applyTransform(t){
+  t.style.transform=`rotate(${t.dataset.angle}deg) scaleX(${t.dataset.flipx}) scaleY(${t.dataset.flipy})`;
+}
+function rotateToken(d){selectedToken&&(selectedToken.dataset.angle=+selectedToken.dataset.angle+d,applyTransform(selectedToken));}
+function flipX(){selectedToken&&(selectedToken.dataset.flipx*=-1,applyTransform(selectedToken));}
+function flipY(){selectedToken&&(selectedToken.dataset.flipy*=-1,applyTransform(selectedToken));}
+
+/* ===== MENU ===== */
+sizeSlider.oninput=()=>selectedToken&&!selectedToken.classList.contains("locked")&&(selectedToken.style.width=sizeSlider.value+"px",selectedToken.style.height=sizeSlider.value+"px");
+function toggleLock(){selectedToken&&(selectedToken.classList.toggle("locked"),sizeSlider.disabled=selectedToken.classList.contains("locked"));}
+function renameToken(){if(selectedToken){const n=prompt("Nom ?");n!==null&&(selectedToken.querySelector("span").textContent=n);}}
+function setAuraColor(c){selectedToken&&(selectedToken.style.setProperty("--aura-color",c),selectedToken.classList.add("aura"));}
+function setAuraRadius(r){selectedToken&&(selectedToken.style.setProperty("--aura-radius",r+"px"),selectedToken.classList.add("aura"));}
+function enableAura(){selectedToken&&selectedToken.classList.add("aura");}
+function disableAura(){selectedToken&&selectedToken.classList.remove("aura");}
+
+/* ===== DUPLICATE / DELETE ===== */
+function duplicateToken(){
+  if(!selectedToken) return;
+  const t=recreateToken({
+    x:(parseInt(selectedToken.style.left)+20)+"px",
+    y:(parseInt(selectedToken.style.top)+20)+"px",
+    size:selectedToken.offsetWidth,
+    name:selectedToken.querySelector("span")?.textContent||"",
+    image:selectedToken.querySelector("img")?.src||null,
+    angle:selectedToken.dataset.angle,
+    flipx:selectedToken.dataset.flipx,
+    flipy:selectedToken.dataset.flipy,
+    locked:selectedToken.classList.contains("locked"),
+    aura:selectedToken.classList.contains("aura"),
+    auraColor:selectedToken.style.getPropertyValue("--aura-color"),
+    auraRadius:selectedToken.style.getPropertyValue("--aura-radius")
+  });
+  mapContainer.appendChild(t);
+  selectToken(t);
+}
+function deleteToken(){selectedToken&&(selectedToken.remove(),selectedToken=null,menu.style.display="none");}
+
+/* ===== DRAG ===== */
+function makeDraggable(t){
+  let ox=0,oy=0;
+  t.onpointerdown=e=>{if(t.classList.contains("locked"))return;ox=e.offsetX;oy=e.offsetY;t.setPointerCapture(e.pointerId)};
+  t.onpointermove=e=>{
+    if(e.buttons!==1||t.classList.contains("locked"))return;
+    const r=mapContainer.getBoundingClientRect();
+    t.style.left=e.clientX-r.left-ox+"px";
+    t.style.top=e.clientY-r.top-oy+"px";
+  };
+}
+
+/* ===== UI ===== */
+mapContainer.onclick=()=>{document.querySelectorAll(".token.selected").forEach(t=>t.classList.remove("selected"));selectedToken=null;menu.style.display="none";};
+menu.onclick=e=>e.stopPropagation();
+
+/* ===== DICE ===== */
+function rollDice(){
+  const v=$("diceSelect").value;if(!v)return;
+  const[c,f]=v.split("d").map(Number);
+  let r=[],t=0;
+  for(let i=0;i<c;i++){const n=1+Math.random()*f|0;r.push(n);t+=n}
+  diceResult.textContent=`🎲 ${v} → ${r.join(", ")} = ${t}`;
+}
+
+/* ===== SAVE / LOAD ===== */
+const SAVE_KEY="jdr_maps_save_final";
+function saveGame(){
+  currentMapIndex!==-1&&saveCurrentTokens();
+  localStorage.setItem(SAVE_KEY,JSON.stringify({maps,currentMapIndex}));
+  alert("✅ Sauvegarde effectuée");
+}
+function loadGame(){
+  const raw=localStorage.getItem(SAVE_KEY);
+  if(!raw)return alert("❌ Aucune sauvegarde");
+  const d=JSON.parse(raw);
+  maps=d.maps||[];
+  updateMapSelect();
+  selectMap(d.currentMapIndex||0);
+  mapSelect.value=d.currentMapIndex||0;
+  alert("♻️ Sauvegarde chargée");
+}
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js");
+}
+</script>
+
+</body>
+</html>
